@@ -13,8 +13,8 @@ const friendli = createOpenAI({
 // 2. 配置基础路径 (优先环境变量，其次当前运行目录下的 aichat 文件夹)
 const BASE_PATH = path.resolve(process.cwd());
 
-// 判断是否运行在 Vercel 环境（Serverless 不支持 MCP 文件系统）
-const isVercel = !!process.env.VERCEL;
+// 判断是否运行在 Serverless 环境（Vercel / Cloudflare 不支持 MCP 文件系统）
+const isServerless = !!(process.env.VERCEL || process.env.CF_PAGES || process.env.CF_WORKER);
 
 // 3. System Prompt
 const systemPrompt = `你是一个高效、直接的全能 AI 助手。
@@ -73,9 +73,9 @@ async function initMCPTools() {
     return mcpInitializing;
 }
 
-/** 获取 MCP 工具（Vercel 环境下跳过） */
+/** 获取 MCP 工具（Serverless 环境下跳过） */
 async function getMCPTools() {
-    if (isVercel) return null;
+    if (isServerless) return null;
     if (!mcpTools) {
         return initMCPTools();
     }
@@ -111,9 +111,9 @@ export async function POST(req: Request) {
     try {
         // 增加请求体类型断言
         const { messages, id, model = 'qwen3-max-2026-01-23' } = await req.json()
-        // 获取 MCP 工具 (复用全局连接，Vercel 环境跳过)
+        // 获取 MCP 工具 (复用全局连接，Serverless 环境跳过)
         let tools: any = null;
-        if (!isVercel) {
+        if (!isServerless) {
             try {
                 tools = await getMCPTools();
             } catch (e) {
