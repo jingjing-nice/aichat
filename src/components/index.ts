@@ -4,3 +4,4 @@ export { MessageBubble } from './MessageBubble';
 export { CodeBlock } from './CodeBlock';
 export { ChatInput } from './ChatInput';
 export { WelcomeScreen } from './WelcomeScreen';
+export { DocumentManager } from './DocumentManager';
