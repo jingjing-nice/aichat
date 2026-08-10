@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { UIMessage } from 'ai';
-import { Copy, Check, RefreshCw, Pencil, X, Check as CheckIcon } from 'lucide-react';
+import { Copy, Check, RefreshCw, Pencil, Check as CheckIcon } from 'lucide-react';
 import { CodeBlock } from './CodeBlock';
 import { ReasoningBlock } from './ReasoningBlock';
 import { ToolCallBlock } from './ToolCallBlock';

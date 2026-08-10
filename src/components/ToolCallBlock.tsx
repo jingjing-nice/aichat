@@ -77,7 +77,6 @@ export function ToolCallBlock({
   state,
   output,
   errorText,
-  isStreaming = false,
 }: ToolCallBlockProps) {
   const [open, setOpen] = useState(false);
 

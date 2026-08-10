@@ -1,6 +1,5 @@
 'use client';
 
-import { Sparkles } from 'lucide-react';
 import { SUGGESTIONS } from '@/lib/constants';
 
 interface WelcomeScreenProps {

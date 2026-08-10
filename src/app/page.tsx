@@ -34,8 +34,8 @@ export default function ChatPage() {
   }, [createConversation]);
 
   const handleSendFromWelcome = useCallback(
-    (text: string) => {
-      const id = createConversation();
+    async (text: string) => {
+      const id = await createConversation();
       // 设置待发送消息，ChatView 挂载后会自动发送
       setPendingPrompt({ convId: id, text });
     },

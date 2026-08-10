@@ -3,7 +3,6 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { Experimental_StdioMCPTransport } from '@ai-sdk/mcp/mcp-stdio';
 import { experimental_createMCPClient as createMCPClient } from '@ai-sdk/mcp';
 import path from 'path';
-import { retrieveRelevantChunks, formatContextForLLM } from '@/lib/rag/retriever';
 
 // 1. 初始化 LLM Provider
 const friendli = createOpenAI({
@@ -106,66 +105,11 @@ process.on('SIGTERM', async () => {
 });
 
 // ==========================================
-// 5. RAG 检索增强
-// ==========================================
-
-/**
- * 从对话消息中提取用户最新查询
- * 
- * 为什么取最后一条用户消息:
- * - RAG 检索应该基于用户当前的问题，而非整个对话历史
- * - 避免将历史消息的关键词混入检索查询，降低检索精度
- */
-function extractLatestQuery(messages: any[]): string {
-    // 从后往前找最后一条用户消息
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg.role === 'user') {
-            // 提取文本内容
-            if (msg.parts) {
-                const textParts = msg.parts.filter((p: any) => p.type === 'text');
-                return textParts.map((p: any) => p.text).join(' ');
-            }
-            if (typeof msg.content === 'string') return msg.content;
-        }
-    }
-    return '';
-}
-
-/**
- * 执行 RAG 检索
- * 
- * 为什么将 RAG 逻辑独立为函数:
- * - 检索失败不应阻塞整个对话（graceful degradation）
- * - 便于单独测试和调优检索效果
- * - 可以在 Serverless 环境中选择性跳过（如果没有数据库）
- */
-async function performRAGRetrieval(query: string): Promise<string> {
-    try {
-        const chunks = await retrieveRelevantChunks(query, 5, 0.3);
-        
-        if (chunks.length === 0) {
-            console.log('[RAG] 未检索到相关内容，使用纯 LLM 回答');
-            return '';
-        }
-        
-        console.log(`[RAG] 检索到 ${chunks.length} 个相关分块:`, 
-            chunks.map(c => `${c.documentTitle}(${(c.similarity * 100).toFixed(0)}%)`).join(', '));
-        
-        return formatContextForLLM(chunks);
-    } catch (error) {
-        // 检索失败时降级为纯 LLM 回答，不阻塞对话
-        console.error('[RAG] 检索失败，降级为纯 LLM:', error);
-        return '';
-    }
-}
-
-// ==========================================
 // 6. API Route Handler
 // ==========================================
 export async function POST(req: Request) {
     try {
-        const { messages, id, model = 'qwen3-max-2026-01-23' } = await req.json();
+        const { messages, model = 'qwen3-max-2026-01-23' } = await req.json();
         
         // 获取 MCP 工具 (复用全局连接，Serverless 环境跳过)
         let tools: any = null;
@@ -179,31 +123,12 @@ export async function POST(req: Request) {
             }
         }
 
-        // ==========================================
-        // RAG 检索增强: 在调用 LLM 之前检索相关文档
-        // ==========================================
-        // 为什么在这里执行检索:
-        // - 检索和 MCP 工具初始化可以并行（未来优化点）
-        // - 检索结果会注入到 system prompt 中，影响 LLM 的回答
-        // - 检索失败时优雅降级，不影响正常对话
-        let ragContext = '';
-        const latestQuery = extractLatestQuery(messages);
-        if (latestQuery) {
-            ragContext = await performRAGRetrieval(latestQuery);
-        }
-
-        // 构建最终的 system prompt
-        // 如果有 RAG 上下文，追加到基础 prompt 后面
-        const finalSystemPrompt = ragContext 
-            ? `${systemPrompt}\n\n${ragContext}`
-            : systemPrompt;
-
         const modelMessages = await convertToModelMessages(messages);
 
         // 调用 LLM
         const result = streamText({
             model: friendli(model),
-            system: finalSystemPrompt,
+            system: systemPrompt,
             messages: modelMessages,
             ...(tools ? { tools } : {}),
             stopWhen: stepCountIs(6),
