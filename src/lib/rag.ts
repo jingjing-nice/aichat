@@ -9,9 +9,9 @@
 import { embed, embedMany } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { v4 as uuidv4 } from 'uuid';
-import { query, initDocumentTables } from '@/lib/db';
+import { query, initDocumentTables, getPool } from '@/lib/db';
 
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-v4';
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL as string;
 
 // Embedding Provider 单例（模块级缓存，避免重复创建）
 const embeddingProvider = createOpenAI({
@@ -115,6 +115,8 @@ export async function ingestDocument(options: {
   title: string;
   content: string;
   docId?: string;
+  sourceType?: string;
+  sourceInfo?: string;
 }): Promise<{ docId: string; chunkCount: number }> {
   const { title, content } = options;
   const docId = options.docId || `doc_${uuidv4()}`;
@@ -122,6 +124,16 @@ export async function ingestDocument(options: {
   await initDocumentTables();
 
   const chunks = chunkText(content);
+
+  // 写入/更新文档元数据（幂等，重复入库同一 docId 会覆盖）
+  await query(
+    `INSERT INTO rag_documents (id, title, source_type, source_info, chunk_count)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (id) DO UPDATE SET
+       title = $2, source_type = $3, source_info = $4, chunk_count = $5`,
+    [docId, title, options.sourceType || 'text', options.sourceInfo || null, chunks.length]
+  );
+
   if (chunks.length === 0) {
     return { docId, chunkCount: 0 };
   }
@@ -136,16 +148,64 @@ export async function ingestDocument(options: {
     // 逐块写入（块 ID = 文档 ID + 序号，便于按文档删除/去重）
     for (let j = 0; j < batch.length; j++) {
       await query(
-        `INSERT INTO documents (id, source_name, content, embedding)
-         VALUES ($1, $2, $3, $4::vector)
-         ON CONFLICT (id) DO UPDATE SET content = $3, embedding = $4::vector`,
-        [`${docId}_${i + j}`, title, batch[j], JSON.stringify(embeddings[j])]
+        `INSERT INTO documents (id, doc_id, source_name, content, embedding)
+         VALUES ($1, $2, $3, $4, $5::vector)
+         ON CONFLICT (id) DO UPDATE SET content = $4, embedding = $5::vector`,
+        [`${docId}_${i + j}`, docId, title, batch[j], JSON.stringify(embeddings[j])]
       );
     }
   }
 
   console.log(`[rag] 文档 "${title}" 入库完成，共 ${chunks.length} 个块`);
   return { docId, chunkCount: chunks.length };
+}
+
+// ==========================================
+// 2.5 文档列表与删除
+// ==========================================
+
+export interface DocumentMeta {
+  id: string;
+  title: string;
+  source_type: string;
+  source_info: string | null;
+  chunk_count: number;
+  created_at: string;
+}
+
+/** 获取所有已入库文档的元数据列表，按创建时间倒序 */
+export async function listDocuments(): Promise<DocumentMeta[]> {
+  await initDocumentTables();
+  const res = await query(
+    `SELECT id, title, source_type, source_info, chunk_count, created_at
+     FROM rag_documents
+     ORDER BY created_at DESC`
+  );
+  return res.rows as DocumentMeta[];
+}
+
+/**
+ * 删除文档：同时清除元数据和所有分块向量
+ * 两条 DELETE 放在事务里，避免删了一半的脏数据
+ */
+export async function deleteDocument(docId: string): Promise<boolean> {
+  await initDocumentTables();
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM documents WHERE doc_id = $1', [docId]);
+    // 兼容早期数据：老块没有 doc_id 列值，按 ID 前缀兑底清理
+    await client.query('DELETE FROM documents WHERE doc_id IS NULL AND id LIKE $1', [`${docId}_%`]);
+    const res = await client.query('DELETE FROM rag_documents WHERE id = $1', [docId]);
+    await client.query('COMMIT');
+    return (res.rowCount ?? 0) > 0;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // ==========================================
@@ -163,11 +223,7 @@ export interface RetrievedChunk {
  *
  * 【余弦距离 <=>】
  * pgvector 的 <=> 运算符返回余弦距离（0~2），相似度 = 1 - 距离。
- *
- * 【为什么把阈值下推到 SQL】
- * 原先是先取 topK 再在 JS 里过滤阈值：若排名靠前的块恰好都低于阈值，
- * 会白白浪费 topK 名额导致返回为空。下推到 SQL 后，数据库会在过滤阈值
- * 之后再取 topK，保证拿到的都是达标的高相关块。
+ * 相似度阈值过滤掉明显不相关的块，避免无关内容污染上下文。
  */
 export async function retrieveRelevant(
   queryText: string,
@@ -183,18 +239,17 @@ export async function retrieveRelevant(
     value: queryText.slice(0, 8000), // embedding 接口有输入长度上限，截断保护
   });
 
-  // WHERE 用余弦距离表达阈值条件（距离 <= 1 - 相似度），与 ORDER BY 同一表达式，
-  // 便于 HNSW 索引参与排序过滤
   const res = await query(
     `SELECT content, source_name, 1 - (embedding <=> $1::vector) AS similarity
      FROM documents
-     WHERE embedding <=> $1::vector <= 1 - $3
      ORDER BY embedding <=> $1::vector
      LIMIT $2`,
-    [JSON.stringify(embedding), topK, minSimilarity]
+    [JSON.stringify(embedding), topK]
   );
 
-  return res.rows as RetrievedChunk[];
+  return (res.rows as RetrievedChunk[]).filter(
+    (row) => Number(row.similarity) >= minSimilarity
+  );
 }
 
 // ==========================================
