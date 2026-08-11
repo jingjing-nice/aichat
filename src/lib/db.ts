@@ -111,6 +111,59 @@ export async function initConversationTables() {
 }
 
 /**
+ * 初始化 RAG 文档向量表（如不存在则创建）
+ *
+ * 【pgvector 依赖】
+ * Neon 原生支持 pgvector 扩展，CREATE EXTENSION IF NOT EXISTS 幂等，
+ * 表已存在时几乎零成本，沿用对话表的懒初始化模式。
+ *
+ * 【表结构设计说明】
+ * rag_documents 表：文档元数据（一个文档一行），用于列表展示和按文档删除
+ * documents 表：存储分块后的文档内容及向量，通过 doc_id 关联元数据
+ *   - embedding VECTOR(1024)：维度与 text-embedding-v4 默认输出维度一致，
+ *     若更换 embedding 模型需同步修改此维度
+ *   - doc_id 列：新增列，老数据通过 IF NOT EXISTS 平滑补齐
+ *   - HNSW 索引 + 余弦相似度：近似最近邻检索，比精确扫描快几个数量级，
+ *     小规模数据下召回率几乎无损
+ */
+export async function initDocumentTables() {
+  await query(`CREATE EXTENSION IF NOT EXISTS vector`);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS rag_documents (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'text',
+      source_info TEXT,
+      chunk_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      source_name TEXT NOT NULL,
+      content TEXT NOT NULL,
+      embedding VECTOR(1024),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // 老表补列：chunks 关联文档 ID，支持按文档删除/统计
+  await query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_id TEXT`);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_documents_embedding
+    ON documents USING hnsw (embedding vector_cosine_ops)
+  `);
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_documents_doc_id ON documents(doc_id)`);
+
+  console.log('[db] 文档向量表初始化完成');
+}
+
+/**
  * 关闭连接池（仅用于 CLI 脚本退出时清理）
  *
  * 【为什么需要它】

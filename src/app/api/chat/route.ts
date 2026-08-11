@@ -2,6 +2,7 @@ import { streamText, stepCountIs, convertToModelMessages } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { Experimental_StdioMCPTransport } from '@ai-sdk/mcp/mcp-stdio';
 import { experimental_createMCPClient as createMCPClient } from '@ai-sdk/mcp';
+import { extractLastUserText, buildRagContext } from '@/lib/rag';
 import path from 'path';
 
 // 1. 初始化 LLM Provider
@@ -125,10 +126,20 @@ export async function POST(req: Request) {
 
         const modelMessages = await convertToModelMessages(messages);
 
+        // RAG：检索知识库中与用户问题相关的资料，拼入 system prompt
+        // 失败不阻断聊天（降级为普通对话）
+        let ragContext = '';
+        try {
+            const userText = extractLastUserText(messages);
+            ragContext = await buildRagContext(userText);
+        } catch (e) {
+            console.error('[RAG] 检索失败，已降级为普通对话:', e);
+        }
+
         // 调用 LLM
         const result = streamText({
             model: friendli(model),
-            system: systemPrompt,
+            system: systemPrompt + ragContext,
             messages: modelMessages,
             ...(tools ? { tools } : {}),
             stopWhen: stepCountIs(6),
