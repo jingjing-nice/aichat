@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { query, initConversationTables } from '@/lib/db';
+import { verifyAuth, unauthorized } from '@/lib/auth';
 import type { UIMessage } from 'ai';
 import type { MessageUsage, TokenUsage } from '@/lib/types';
 
@@ -14,7 +15,9 @@ type RouteContext = { params: Promise<{ id: string }> };
  * GET /api/conversations/[id]
  * 获取单个对话详情（含消息）
  */
-export async function GET(_request: NextRequest, context: RouteContext) {
+export async function GET(request: NextRequest, context: RouteContext) {
+  if (!verifyAuth(request)) return unauthorized();
+
   try {
     await initConversationTables();
     const { id } = await context.params;
@@ -76,6 +79,8 @@ export async function GET(_request: NextRequest, context: RouteContext) {
  * 未传的字段用 COALESCE 保留原值，避免调用方必须先读后写。
  */
 export async function PUT(request: NextRequest, context: RouteContext) {
+  if (!verifyAuth(request)) return unauthorized();
+
   try {
     await initConversationTables();
     const { id } = await context.params;
@@ -154,7 +159,9 @@ export async function PUT(request: NextRequest, context: RouteContext) {
  * messages 表的外键定义了 ON DELETE CASCADE，数据库会自动
  * 级联删除该对话的所有消息，应用层无需手动清理，也不会留下孤儿数据。
  */
-export async function DELETE(_request: NextRequest, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  if (!verifyAuth(request)) return unauthorized();
+
   try {
     await initConversationTables();
     const { id } = await context.params;

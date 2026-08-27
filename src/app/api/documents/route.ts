@@ -14,10 +14,13 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestDocument, listDocuments, deleteDocument } from '@/lib/rag';
+import { verifyAuth, unauthorized } from '@/lib/auth';
 
 const TEXT_EXTENSIONS = ['.txt', '.md', '.markdown', '.csv', '.json'];
 
 export async function POST(req: NextRequest) {
+  if (!verifyAuth(req)) return unauthorized();
+
   try {
     const contentType = req.headers.get('content-type') || '';
 
@@ -101,7 +104,9 @@ export async function POST(req: NextRequest) {
  * GET /api/documents - 获取已入库文档列表
  * 前端 DocumentManager 面板打开时调用，返回 { documents: [...] }
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!verifyAuth(req)) return unauthorized();
+
   try {
     const documents = await listDocuments();
     return NextResponse.json({ documents });
@@ -116,6 +121,8 @@ export async function GET() {
  * 幂等设计：文档不存在时返回 404，重复删除无副作用
  */
 export async function DELETE(req: NextRequest) {
+  if (!verifyAuth(req)) return unauthorized();
+
   try {
     const docId = req.nextUrl.searchParams.get('id');
     if (!docId) {

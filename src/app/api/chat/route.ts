@@ -1,5 +1,7 @@
 import { streamText, stepCountIs, convertToModelMessages } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
+import { NextRequest } from 'next/server';
+import { verifyAuth, unauthorized } from '@/lib/auth';
 import { Experimental_StdioMCPTransport } from '@ai-sdk/mcp/mcp-stdio';
 import { experimental_createMCPClient as createMCPClient } from '@ai-sdk/mcp';
 import { extractLastUserText, buildRagContext } from '@/lib/rag';
@@ -108,7 +110,10 @@ process.on('SIGTERM', async () => {
 // ==========================================
 // 6. API Route Handler
 // ==========================================
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+    // 鉴权：未登录或登录过期直接返回 401，禁止未授权调用 LLM
+    if (!verifyAuth(req)) return unauthorized();
+
     try {
         const { messages, model = 'qwen3-max-2026-01-23' } = await req.json();
         

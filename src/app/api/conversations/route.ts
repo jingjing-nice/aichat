@@ -9,6 +9,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { query, initConversationTables } from '@/lib/db';
+import { verifyAuth, unauthorized } from '@/lib/auth';
 import type { UIMessage } from 'ai';
 import type { Conversation, MessageUsage, TokenUsage } from '@/lib/types';
 
@@ -21,7 +22,10 @@ import type { Conversation, MessageUsage, TokenUsage } from '@/lib/types';
  * 个人应用的对话量级小（几十条），一次拉全比按需懒加载更简单，
  * 避免切换对话时再发请求带来的加载延迟。
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // 鉴权：未登录或登录过期返回 401，防止未授权读取对话数据
+  if (!verifyAuth(request)) return unauthorized();
+
   try {
     // 幂等建表：首次部署时无需手动执行迁移脚本，表不存在会自动创建
     await initConversationTables();
@@ -95,6 +99,8 @@ export async function GET() {
  * 后续的更新/删除操作可以直接用这个 id，无需等待服务端响应。
  */
 export async function POST(request: NextRequest) {
+  if (!verifyAuth(request)) return unauthorized();
+
   try {
     await initConversationTables();
     const body = await request.json();

@@ -25,7 +25,6 @@ export default function RegisterPage() {
                 }),
             })
             const data = await res.json();
-            console.log(data, '[register] 注册接口返回', res);
             if (data.success) {
                 message.success('注册成功，正在跳转…');
                 setTimeout(() => {
@@ -88,137 +87,137 @@ export default function RegisterPage() {
                 padding: '16px',
             }}
         >
-                    <div className="w-full max-w-[400px] animate-fade-in-up">
-                        <div
-                            style={{
-                                background: 'rgba(255, 255, 255, 0.85)',
-                                backdropFilter: 'blur(20px)',
-                                borderRadius: '20px',
-                                boxShadow: '0 20px 60px rgba(0, 0, 0, 0.06)',
-                                border: '1px solid rgba(255, 255, 255, 0.6)',
-                                padding: '40px 32px',
-                            }}
-                        >
-                            {/* Logo & 标题 */}
-                            <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-                                <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#111827', margin: 0 }}>
-                                    创建账户
-                                </h1>
-                                <p style={{ fontSize: '14px', color: '#6b7280', margin: '8px 0 0' }}>
-                                    注册您的 AI Chat 账户
-                                </p>
-                            </div>
-
-                            {/* 头像上传 */}
-                            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '24px' }}>
-                                <Upload
-                                    listType="picture-circle"
-                                    beforeUpload={beforeUpload}
-                                    onChange={handleChange}
-                                    fileList={fileList}
-                                    accept="image/*"
-                                    maxCount={1}
-                                    showUploadList={false}
-                                >
-                                    {fileList.length > 0 && fileList[0].url ? (
-                                        <img
-                                            src={fileList[0].url}
-                                            alt="avatar"
-                                            style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }}
-                                        />
-                                    ) : (
-                                        <div>
-                                            <CameraOutlined style={{ fontSize: '24px', color: '#9ca3af' }} />
-                                            <div style={{ marginTop: '6px', fontSize: '12px', color: '#9ca3af' }}>上传头像</div>
-                                        </div>
-                                    )}
-                                </Upload>
-                            </div>
-
-                            {/* 表单 */}
-                            <Form
-                                form={form}
-                                name="register"
-                                onFinish={onFinish}
-                                autoComplete="off"
-                                layout="vertical"
-                                requiredMark={false}
-                                size="large"
-                            >
-                                <Form.Item
-                                    name="username"
-                                    label="用户名"
-                                    rules={[{ required: true, message: '请输入用户名' }]}
-                                >
-                                    <Input
-                                        prefix={<UserOutlined style={{ color: '#9ca3af' }} />}
-                                        placeholder="请输入用户名"
-                                    />
-                                </Form.Item>
-
-                                <Form.Item
-                                    name="email"
-                                    label="邮箱"
-                                    rules={[
-                                        { required: true, message: '请输入邮箱' },
-                                        { type: 'email', message: '邮箱格式不正确' },
-                                    ]}
-                                >
-                                    <Input
-                                        prefix={<MailOutlined style={{ color: '#9ca3af' }} />}
-                                        placeholder="name@example.com"
-                                    />
-                                </Form.Item>
-
-                                <Form.Item
-                                    name="password"
-                                    label="密码"
-                                    rules={[
-                                        { required: true, message: '请输入密码' },
-                                        { min: 6, message: '密码长度至少 6 位' },
-                                    ]}
-                                >
-                                    <Input.Password
-                                        prefix={<LockOutlined style={{ color: '#9ca3af' }} />}
-                                        placeholder="至少 6 位密码"
-                                    />
-                                </Form.Item>
-
-                                <Form.Item style={{ marginBottom: '16px' }}>
-                                    <Button
-                                        type="primary"
-                                        htmlType="submit"
-                                        loading={loading}
-                                        block
-                                        style={{
-                                            height: '44px',
-                                            borderRadius: '12px',
-                                            fontWeight: 500,
-                                            background: 'linear-gradient(135deg, #3b82f6, #6366f1)',
-                                            boxShadow: '0 6px 16px rgba(59, 130, 246, 0.3)',
-                                        }}
-                                    >
-                                        注册
-                                    </Button>
-                                </Form.Item>
-                            </Form>
-
-                            {/* 登录入口 */}
-                            <p style={{ textAlign: 'center', color: '#6b7280', fontSize: '14px', margin: 0 }}>
-                                已有账户？{' '}
-                                <a href="/login" style={{ color: '#3b82f6', fontWeight: 500, textDecoration: 'none' }}>
-                                    立即登录
-                                </a>
-                            </p>
-                        </div>
-
-                        {/* 底部提示 */}
-                        <p style={{ textAlign: 'center', fontSize: '12px', color: '#9ca3af', marginTop: '24px' }}>
-                            注册即表示您同意{' '}
-                            <a href="#" style={{ color: '#6b7280' }}>服务条款</a> 和{' '}
-                            <a href="#" style={{ color: '#6b7280' }}>隐私政策</a>
+            <div className="w-full max-w-[400px] animate-fade-in-up">
+                <div
+                    style={{
+                        background: 'rgba(255, 255, 255, 0.85)',
+                        backdropFilter: 'blur(20px)',
+                        borderRadius: '20px',
+                        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.06)',
+                        border: '1px solid rgba(255, 255, 255, 0.6)',
+                        padding: '40px 32px',
+                    }}
+                >
+                    {/* Logo & 标题 */}
+                    <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+                        <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#111827', margin: 0 }}>
+                            创建账户
+                        </h1>
+                        <p style={{ fontSize: '14px', color: '#6b7280', margin: '8px 0 0' }}>
+                            注册您的 AI Chat 账户
                         </p>
                     </div>
+
+                    {/* 头像上传 */}
+                    <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '24px' }}>
+                        <Upload
+                            listType="picture-circle"
+                            beforeUpload={beforeUpload}
+                            onChange={handleChange}
+                            fileList={fileList}
+                            accept="image/*"
+                            maxCount={1}
+                            showUploadList={false}
+                        >
+                            {fileList.length > 0 && fileList[0].url ? (
+                                <img
+                                    src={fileList[0].url}
+                                    alt="avatar"
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }}
+                                />
+                            ) : (
+                                <div>
+                                    <CameraOutlined style={{ fontSize: '24px', color: '#9ca3af' }} />
+                                    <div style={{ marginTop: '6px', fontSize: '12px', color: '#9ca3af' }}>上传头像</div>
+                                </div>
+                            )}
+                        </Upload>
+                    </div>
+
+                    {/* 表单 */}
+                    <Form
+                        form={form}
+                        name="register"
+                        onFinish={onFinish}
+                        autoComplete="off"
+                        layout="vertical"
+                        requiredMark={false}
+                        size="large"
+                    >
+                        <Form.Item
+                            name="username"
+                            label="用户名"
+                            rules={[{ required: true, message: '请输入用户名' }]}
+                        >
+                            <Input
+                                prefix={<UserOutlined style={{ color: '#9ca3af' }} />}
+                                placeholder="请输入用户名"
+                            />
+                        </Form.Item>
+
+                        <Form.Item
+                            name="email"
+                            label="邮箱"
+                            rules={[
+                                { required: true, message: '请输入邮箱' },
+                                { type: 'email', message: '邮箱格式不正确' },
+                            ]}
+                        >
+                            <Input
+                                prefix={<MailOutlined style={{ color: '#9ca3af' }} />}
+                                placeholder="name@example.com"
+                            />
+                        </Form.Item>
+
+                        <Form.Item
+                            name="password"
+                            label="密码"
+                            rules={[
+                                { required: true, message: '请输入密码' },
+                                { min: 6, message: '密码长度至少 6 位' },
+                            ]}
+                        >
+                            <Input.Password
+                                prefix={<LockOutlined style={{ color: '#9ca3af' }} />}
+                                placeholder="至少 6 位密码"
+                            />
+                        </Form.Item>
+
+                        <Form.Item style={{ marginBottom: '16px' }}>
+                            <Button
+                                type="primary"
+                                htmlType="submit"
+                                loading={loading}
+                                block
+                                style={{
+                                    height: '44px',
+                                    borderRadius: '12px',
+                                    fontWeight: 500,
+                                    background: 'linear-gradient(135deg, #3b82f6, #6366f1)',
+                                    boxShadow: '0 6px 16px rgba(59, 130, 246, 0.3)',
+                                }}
+                            >
+                                注册
+                            </Button>
+                        </Form.Item>
+                    </Form>
+
+                    {/* 登录入口 */}
+                    <p style={{ textAlign: 'center', color: '#6b7280', fontSize: '14px', margin: 0 }}>
+                        已有账户？{' '}
+                        <a href="/login" style={{ color: '#3b82f6', fontWeight: 500, textDecoration: 'none' }}>
+                            立即登录
+                        </a>
+                    </p>
                 </div>
+
+                {/* 底部提示 */}
+                <p style={{ textAlign: 'center', fontSize: '12px', color: '#9ca3af', marginTop: '24px' }}>
+                    注册即表示您同意{' '}
+                    <a href="#" style={{ color: '#6b7280' }}>服务条款</a> 和{' '}
+                    <a href="#" style={{ color: '#6b7280' }}>隐私政策</a>
+                </p>
+            </div>
+        </div>
     );
 }
