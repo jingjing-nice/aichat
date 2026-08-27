@@ -163,6 +163,30 @@ export async function initDocumentTables() {
   console.log('[db] 文档向量表初始化完成');
 }
 
+
+/***
+ * 创建登录信息表
+ * id
+ * username
+ * password
+ * email
+ * user_pic
+*/
+
+export async function initUserTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      user_pic TEXT
+    )
+  `);
+
+  console.log('[db] 用户表初始化完成');
+}
+
 /**
  * 关闭连接池（仅用于 CLI 脚本退出时清理）
  *
