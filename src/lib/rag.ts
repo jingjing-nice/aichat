@@ -7,6 +7,7 @@
  * VECTOR(1024) 定义保持一致。可通过环境变量覆盖模型名。
  */
 import { embed, embedMany } from 'ai';
+import type { UIMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { v4 as uuidv4 } from 'uuid';
 import { query, initDocumentTables, getPool } from '@/lib/db';
@@ -114,11 +115,13 @@ export function chunkText(
 export async function ingestDocument(options: {
   title: string;
   content: string;
+  /** 文档归属用户，用于数据隔离 */
+  userId: number;
   docId?: string;
   sourceType?: string;
   sourceInfo?: string;
 }): Promise<{ docId: string; chunkCount: number }> {
-  const { title, content } = options;
+  const { title, content, userId } = options;
   const docId = options.docId || `doc_${uuidv4()}`;
 
   await initDocumentTables();
@@ -127,11 +130,11 @@ export async function ingestDocument(options: {
 
   // 写入/更新文档元数据（幂等，重复入库同一 docId 会覆盖）
   await query(
-    `INSERT INTO rag_documents (id, title, source_type, source_info, chunk_count)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO rag_documents (id, user_id, title, source_type, source_info, chunk_count)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (id) DO UPDATE SET
-       title = $2, source_type = $3, source_info = $4, chunk_count = $5`,
-    [docId, title, options.sourceType || 'text', options.sourceInfo || null, chunks.length]
+       title = $3, source_type = $4, source_info = $5, chunk_count = $6`,
+    [docId, userId, title, options.sourceType || 'text', options.sourceInfo || null, chunks.length]
   );
 
   if (chunks.length === 0) {
@@ -173,13 +176,15 @@ export interface DocumentMeta {
   created_at: string;
 }
 
-/** 获取所有已入库文档的元数据列表，按创建时间倒序 */
-export async function listDocuments(): Promise<DocumentMeta[]> {
+/** 获取指定用户已入库文档的元数据列表，按创建时间倒序 */
+export async function listDocuments(userId: number): Promise<DocumentMeta[]> {
   await initDocumentTables();
   const res = await query(
     `SELECT id, title, source_type, source_info, chunk_count, created_at
      FROM rag_documents
-     ORDER BY created_at DESC`
+     WHERE user_id = $1
+     ORDER BY created_at DESC`,
+    [userId]
   );
   return res.rows as DocumentMeta[];
 }
@@ -187,17 +192,27 @@ export async function listDocuments(): Promise<DocumentMeta[]> {
 /**
  * 删除文档：同时清除元数据和所有分块向量
  * 两条 DELETE 放在事务里，避免删了一半的脏数据
+ * 按 user_id 过滤，防止跨用户删除他人文档
  */
-export async function deleteDocument(docId: string): Promise<boolean> {
+export async function deleteDocument(docId: string, userId: number): Promise<boolean> {
   await initDocumentTables();
   const pool = getPool();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 仅当事文档确属该用户时才清分块（DELETE 结果用于判断归属）
+    const meta = await client.query(
+      'SELECT id FROM rag_documents WHERE id = $1 AND user_id = $2',
+      [docId, userId]
+    );
+    if (meta.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return false;
+    }
     await client.query('DELETE FROM documents WHERE doc_id = $1', [docId]);
     // 兼容早期数据：老块没有 doc_id 列值，按 ID 前缀兑底清理
     await client.query('DELETE FROM documents WHERE doc_id IS NULL AND id LIKE $1', [`${docId}_%`]);
-    const res = await client.query('DELETE FROM rag_documents WHERE id = $1', [docId]);
+    const res = await client.query('DELETE FROM rag_documents WHERE id = $1 AND user_id = $2', [docId, userId]);
     await client.query('COMMIT');
     return (res.rowCount ?? 0) > 0;
   } catch (e) {
@@ -219,14 +234,19 @@ export interface RetrievedChunk {
 }
 
 /**
- * 按用户问题检索最相关的文档块
+ * 按用户问题检索该用户知识库中最相关的文档块
  *
  * 【余弦距离 <=>】
  * pgvector 的 <=> 运算符返回余弦距离（0~2），相似度 = 1 - 距离。
  * 相似度阈值过滤掉明显不相关的块，避免无关内容污染上下文。
+ *
+ * 【数据隔离】
+ * 通过 JOIN rag_documents 按 user_id 过滤，只召回当前用户自己的文档块，
+ * 早期无 doc_id 关联的存量块不会被检索到。
  */
 export async function retrieveRelevant(
   queryText: string,
+  userId: number,
   topK: number = 5,
   minSimilarity: number = 0.3
 ): Promise<RetrievedChunk[]> {
@@ -240,11 +260,12 @@ export async function retrieveRelevant(
   });
 
   const res = await query(
-    `SELECT content, source_name, 1 - (embedding <=> $1::vector) AS similarity
-     FROM documents
-     ORDER BY embedding <=> $1::vector
-     LIMIT $2`,
-    [JSON.stringify(embedding), topK]
+    `SELECT d.content, d.source_name, 1 - (d.embedding <=> $1::vector) AS similarity
+     FROM documents d
+     JOIN rag_documents r ON r.id = d.doc_id AND r.user_id = $2
+     ORDER BY d.embedding <=> $1::vector
+     LIMIT $3`,
+    [JSON.stringify(embedding), userId, topK]
   );
 
   return (res.rows as RetrievedChunk[]).filter(
@@ -256,33 +277,33 @@ export async function retrieveRelevant(
 // 4. 聊天上下文构建
 // ==========================================
 
+/** 纯文本 part 的结构（UIMessage.parts 中 type 为 'text' 的部分） */
+type TextPart = { type: 'text'; text: string };
+
 /**
  * 从 UIMessage 数组中提取最后一条用户消息的纯文本
  *
  * AI SDK v6 的消息内容是 parts 数组，只取 text 类型的部分。
  */
-export function extractLastUserText(messages: any[]): string {
+export function extractLastUserText(messages: UIMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg?.role !== 'user') continue;
-    if (typeof msg.content === 'string') return msg.content;
-    if (Array.isArray(msg.parts)) {
-      const text = msg.parts
-        .filter((p: any) => p?.type === 'text')
-        .map((p: any) => p.text)
-        .join('\n');
-      if (text.trim()) return text;
-    }
+    const text = msg.parts
+      .filter((p): p is TextPart => p.type === 'text')
+      .map((p) => p.text)
+      .join('\n');
+    if (text.trim()) return text;
   }
   return '';
 }
 
 /**
- * 根据用户问题检索资料并拼接为可注入 system prompt 的上下文字符串
+ * 根据用户问题检索其知识库资料并拼接为可注入 system prompt 的上下文字符串
  * 无相关资料时返回空串，调用方直接拼接即可。
  */
-export async function buildRagContext(userText: string): Promise<string> {
-  const docs = await retrieveRelevant(userText);
+export async function buildRagContext(userText: string, userId: number): Promise<string> {
+  const docs = await retrieveRelevant(userText, userId);
   if (docs.length === 0) return '';
 
   const sections = docs

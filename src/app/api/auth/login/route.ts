@@ -9,11 +9,15 @@ import jwt from 'jsonwebtoken';
 /**
  * 统一错误响应：使用真实 HTTP 状态码，便于前端/网关按状态码统一处理
  * 400 参数错误 / 401 认证失败 / 500 服务端错误；
- * 响应体保留 { success, message } 结构，前端可读 message 展示具体原因
+ * 全站失败响应统一为 { success: false, error } 结构（与 unauthorized() 一致）
  */
-function fail(message: string, status: number) {
-    return NextResponse.json({ success: false, message }, { status });
+function fail(error: string, status: number) {
+    return NextResponse.json({ success: false, error }, { status });
 }
+
+/** Token 有效期：7 天（JWT 与 Cookie 保持一致），过短会导致用户频繁掉线 */
+const TOKEN_EXPIRES_IN = '7d';
+const TOKEN_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 
 export async function POST(req: NextRequest) {
     try {
@@ -33,15 +37,15 @@ export async function POST(req: NextRequest) {
 
         // 用户不存在或密码错误统一返回 401，不区分具体原因（避免撞库探测账号是否存在）
         if (existing.rows.length === 0) return fail('登录失败', 401);
-        // 验证密码是否正确 compareSync(用户输入的密码, 数据库中存储的密码)
-        const compareResult = bcrypt.compareSync(password, existing.rows[0].password);
+        // 验证密码是否正确（异步版本，避免阻塞事件循环）
+        const compareResult = await bcrypt.compare(password, existing.rows[0].password);
 
         if (!compareResult) return fail('登录失败', 401);
         // 登录成功 生成 Token 字符串
         const tokenStr = jwt.sign(
             { id: existing.rows[0].id, username: existing.rows[0].username },
             jwtSecretKey,
-            { expiresIn: '60s' }
+            { expiresIn: TOKEN_EXPIRES_IN }
         );
 
         // 设置 HttpOnly cookie，token 不暴露给客户端 JavaScript
@@ -50,7 +54,7 @@ export async function POST(req: NextRequest) {
             name: 'token',
             value: tokenStr,
             path: '/',
-            maxAge: 60,        // 有效期 60s，与 JWT 有效期保持一致
+            maxAge: TOKEN_MAX_AGE_SECONDS, // 有效期与 JWT 有效期保持一致
             httpOnly: true,          // 防止 XSS 攻击，JavaScript 无法读取
             sameSite: 'lax',         // 防止 CSRF 攻击
         });

@@ -1,4 +1,5 @@
 import { streamText, stepCountIs, convertToModelMessages } from 'ai';
+import type { UIMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { NextRequest } from 'next/server';
 import { verifyAuth, unauthorized } from '@/lib/auth';
@@ -46,9 +47,12 @@ const systemPrompt = `你是一个高效、直接的全能 AI 助手。
 // ==========================================
 // 4. MCP Client 全局单例管理 (核心优化)
 // ==========================================
-let mcpClient: Awaited<ReturnType<typeof createMCPClient>> | null = null;
-let mcpTools: any = null;
-let mcpInitializing: Promise<any> | null = null;
+type MCPClient = Awaited<ReturnType<typeof createMCPClient>>;
+type MCPTools = Awaited<ReturnType<MCPClient['tools']>>;
+
+let mcpClient: MCPClient | null = null;
+let mcpTools: MCPTools | null = null;
+let mcpInitializing: Promise<MCPTools> | null = null;
 
 /** 重置 MCP 客户端状态 */
 function resetMCPClient() {
@@ -112,13 +116,17 @@ process.on('SIGTERM', async () => {
 // ==========================================
 export async function POST(req: NextRequest) {
     // 鉴权：未登录或登录过期直接返回 401，禁止未授权调用 LLM
-    if (!verifyAuth(req)) return unauthorized();
+    const user = verifyAuth(req);
+    if (!user) return unauthorized();
 
     try {
-        const { messages, model = 'qwen3-max-2026-01-23' } = await req.json();
+        const { messages, model = 'qwen3-max-2026-01-23' } = (await req.json()) as {
+            messages: UIMessage[];
+            model?: string;
+        };
         
         // 获取 MCP 工具 (复用全局连接，Serverless 环境跳过)
-        let tools: any = null;
+        let tools: MCPTools | null = null;
         if (!isServerless) {
             try {
                 tools = await getMCPTools();
@@ -131,12 +139,12 @@ export async function POST(req: NextRequest) {
 
         const modelMessages = await convertToModelMessages(messages);
 
-        // RAG：检索知识库中与用户问题相关的资料，拼入 system prompt
+        // RAG：检索当前用户知识库中与问题相关的资料，拼入 system prompt
         // 失败不阻断聊天（降级为普通对话）
         let ragContext = '';
         try {
             const userText = extractLastUserText(messages);
-            ragContext = await buildRagContext(userText);
+            ragContext = await buildRagContext(userText, user.id);
         } catch (e) {
             console.error('[RAG] 检索失败，已降级为普通对话:', e);
         }
@@ -164,7 +172,8 @@ export async function POST(req: NextRequest) {
 
         return Response.json(
             {
-                error: 'Failed to process request',
+                success: false,
+                error: '请求处理失败',
                 details: process.env.NODE_ENV === 'development' ? errorMessage : undefined
             },
             { status: 500 }

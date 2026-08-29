@@ -19,7 +19,8 @@ import { verifyAuth, unauthorized } from '@/lib/auth';
 const TEXT_EXTENSIONS = ['.txt', '.md', '.markdown', '.csv', '.json'];
 
 export async function POST(req: NextRequest) {
-  if (!verifyAuth(req)) return unauthorized();
+  const user = verifyAuth(req);
+  if (!user) return unauthorized();
 
   try {
     const contentType = req.headers.get('content-type') || '';
@@ -42,7 +43,7 @@ export async function POST(req: NextRequest) {
         // 文件上传模式
         const file = formData.get('file') as File | null;
         if (!file) {
-          return NextResponse.json({ error: '缺少 file 或 content 字段' }, { status: 400 });
+          return NextResponse.json({ success: false, error: '缺少 file 或 content 字段' }, { status: 400 });
         }
 
         const fileName = file.name || 'untitled.txt';
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest) {
         const isTextFile = TEXT_EXTENSIONS.some((ext) => lowerName.endsWith(ext));
         if (!isTextFile) {
           return NextResponse.json(
-            { error: `暂不支持该文件类型，目前仅支持：${TEXT_EXTENSIONS.join(', ')}` },
+            { success: false, error: `暂不支持该文件类型，目前仅支持：${TEXT_EXTENSIONS.join(', ')}` },
             { status: 415 }
           );
         }
@@ -68,22 +69,23 @@ export async function POST(req: NextRequest) {
     }
 
     if (!title) {
-      return NextResponse.json({ error: '缺少文档标题 title' }, { status: 400 });
+      return NextResponse.json({ success: false, error: '缺少文档标题 title' }, { status: 400 });
     }
     if (!content || !content.trim()) {
-      return NextResponse.json({ error: '文档内容为空' }, { status: 400 });
+      return NextResponse.json({ success: false, error: '文档内容为空' }, { status: 400 });
     }
 
-    // 执行分块 + 向量化 + 入库
+    // 执行分块 + 向量化 + 入库（归属当前登录用户）
     const { docId, chunkCount } = await ingestDocument({
       title,
       content,
+      userId: user.id,
       sourceType,
       sourceInfo,
     });
 
     if (chunkCount === 0) {
-      return NextResponse.json({ error: '分块结果为空，请检查文档内容' }, { status: 422 });
+      return NextResponse.json({ success: false, error: '分块结果为空，请检查文档内容' }, { status: 422 });
     }
 
     return NextResponse.json({ success: true, docId, title, chunkCount });
@@ -92,6 +94,7 @@ export async function POST(req: NextRequest) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
       {
+        success: false,
         error: '文档入库失败',
         details: process.env.NODE_ENV === 'development' ? errorMessage : undefined,
       },
@@ -105,14 +108,15 @@ export async function POST(req: NextRequest) {
  * 前端 DocumentManager 面板打开时调用，返回 { documents: [...] }
  */
 export async function GET(req: NextRequest) {
-  if (!verifyAuth(req)) return unauthorized();
+  const user = verifyAuth(req);
+  if (!user) return unauthorized();
 
   try {
-    const documents = await listDocuments();
-    return NextResponse.json({ documents });
+    const documents = await listDocuments(user.id);
+    return NextResponse.json({ success: true, documents });
   } catch (error) {
     console.error('[Documents API] 获取列表失败:', error);
-    return NextResponse.json({ error: '获取文档列表失败' }, { status: 500 });
+    return NextResponse.json({ success: false, error: '获取文档列表失败' }, { status: 500 });
   }
 }
 
@@ -121,22 +125,23 @@ export async function GET(req: NextRequest) {
  * 幂等设计：文档不存在时返回 404，重复删除无副作用
  */
 export async function DELETE(req: NextRequest) {
-  if (!verifyAuth(req)) return unauthorized();
+  const user = verifyAuth(req);
+  if (!user) return unauthorized();
 
   try {
     const docId = req.nextUrl.searchParams.get('id');
     if (!docId) {
-      return NextResponse.json({ error: '缺少查询参数 id' }, { status: 400 });
+      return NextResponse.json({ success: false, error: '缺少查询参数 id' }, { status: 400 });
     }
 
-    const deleted = await deleteDocument(docId);
+    const deleted = await deleteDocument(docId, user.id);
     if (!deleted) {
-      return NextResponse.json({ error: '文档不存在' }, { status: 404 });
+      return NextResponse.json({ success: false, error: '文档不存在' }, { status: 404 });
     }
 
     return NextResponse.json({ success: true, docId });
   } catch (error) {
     console.error('[Documents API] 删除失败:', error);
-    return NextResponse.json({ error: '删除文档失败' }, { status: 500 });
+    return NextResponse.json({ success: false, error: '删除文档失败' }, { status: 500 });
   }
 }

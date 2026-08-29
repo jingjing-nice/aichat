@@ -82,9 +82,11 @@ export async function query(text: string, params?: unknown[]) {
  *   - idx_messages_conv 索引：按 conversation_id 查消息是最高频操作，建索引加速
  */
 export async function initConversationTables() {
+
   await query(`
     CREATE TABLE IF NOT EXISTS conversations (
       id TEXT PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id),
       title TEXT NOT NULL DEFAULT '新对话',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -92,6 +94,7 @@ export async function initConversationTables() {
       message_usages JSONB NOT NULL DEFAULT '[]'
     )
   `);
+
 
   await query(`
     CREATE TABLE IF NOT EXISTS messages (
@@ -127,11 +130,13 @@ export async function initConversationTables() {
  *     小规模数据下召回率几乎无损
  */
 export async function initDocumentTables() {
+
   await query(`CREATE EXTENSION IF NOT EXISTS vector`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS rag_documents (
       id TEXT PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id),
       title TEXT NOT NULL,
       source_type TEXT NOT NULL DEFAULT 'text',
       source_info TEXT,
@@ -139,6 +144,7 @@ export async function initDocumentTables() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
 
   await query(`
     CREATE TABLE IF NOT EXISTS documents (

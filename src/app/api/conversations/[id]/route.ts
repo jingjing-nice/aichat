@@ -16,21 +16,22 @@ type RouteContext = { params: Promise<{ id: string }> };
  * 获取单个对话详情（含消息）
  */
 export async function GET(request: NextRequest, context: RouteContext) {
-  if (!verifyAuth(request)) return unauthorized();
+  const user = verifyAuth(request);
+  if (!user) return unauthorized();
 
   try {
     await initConversationTables();
     const { id } = await context.params;
 
-    // 获取对话信息
+    // 获取对话信息（按 user_id 过滤，他人对话一律视为不存在）
     const convResult = await query(
       `SELECT id, title, created_at, updated_at, token_usage, message_usages
-       FROM conversations WHERE id = $1`,
-      [id],
+       FROM conversations WHERE id = $1 AND user_id = $2`,
+      [id, user.id],
     );
 
     if (convResult.rows.length === 0) {
-      return NextResponse.json({ error: '对话不存在' }, { status: 404 });
+      return NextResponse.json({ success: false, error: '对话不存在' }, { status: 404 });
     }
 
     const conv = convResult.rows[0];
@@ -61,7 +62,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     });
   } catch (error) {
     console.error('[API] GET /api/conversations/[id] 失败:', error);
-    return NextResponse.json({ error: '获取对话详情失败' }, { status: 500 });
+    return NextResponse.json({ success: false, error: '获取对话详情失败' }, { status: 500 });
   }
 }
 
@@ -79,7 +80,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
  * 未传的字段用 COALESCE 保留原值，避免调用方必须先读后写。
  */
 export async function PUT(request: NextRequest, context: RouteContext) {
-  if (!verifyAuth(request)) return unauthorized();
+  const user = verifyAuth(request);
+  console.log('user----', user)
+  if (!user) return unauthorized();
 
   try {
     await initConversationTables();
@@ -97,10 +100,13 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       messageUsages?: MessageUsage[];
     };
 
-    // 先检查对话是否存在，对不存在的 id 返回 404 而不是静默成功
-    const existing = await query(`SELECT id FROM conversations WHERE id = $1`, [id]);
+    // 先检查对话是否存在且属于当前用户，对不存在/他人的 id 返回 404 而不是静默成功
+    const existing = await query(
+      `SELECT id FROM conversations WHERE id = $1 AND user_id = $2`,
+      [id, user.id],
+    );
     if (existing.rows.length === 0) {
-      return NextResponse.json({ error: '对话不存在' }, { status: 404 });
+      return NextResponse.json({ success: false, error: '对话不存在' }, { status: 404 });
     }
 
     // 更新对话元数据：COALESCE(新值, 旧值) 实现"传了才更新，没传保留"
@@ -111,13 +117,14 @@ export async function PUT(request: NextRequest, context: RouteContext) {
           token_usage = COALESCE($2::jsonb, token_usage),
           message_usages = COALESCE($3::jsonb, message_usages),
           updated_at = NOW()
-        WHERE id = $4`,
+        WHERE id = $4 AND user_id = $5`,
         [
           title ?? null,
           // JSONB 字段需要序列化为字符串后显式转型 ::jsonb
           tokenUsage ? JSON.stringify(tokenUsage) : null,
           messageUsages ? JSON.stringify(messageUsages) : null,
           id,
+          user.id,
         ],
       );
     }
@@ -141,13 +148,16 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       }
 
       // 有新消息说明对话活跃，刷新 updated_at（侧边栏按此字段排序和分组）
-      await query(`UPDATE conversations SET updated_at = NOW() WHERE id = $1`, [id]);
+      await query(
+        `UPDATE conversations SET updated_at = NOW() WHERE id = $1 AND user_id = $2`,
+        [id, user.id],
+      );
     }
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('[API] PUT /api/conversations/[id] 失败:', error);
-    return NextResponse.json({ error: '更新对话失败' }, { status: 500 });
+    return NextResponse.json({ success: false, error: '更新对话失败' }, { status: 500 });
   }
 }
 
@@ -160,23 +170,27 @@ export async function PUT(request: NextRequest, context: RouteContext) {
  * 级联删除该对话的所有消息，应用层无需手动清理，也不会留下孤儿数据。
  */
 export async function DELETE(request: NextRequest, context: RouteContext) {
-  if (!verifyAuth(request)) return unauthorized();
+  const user = verifyAuth(request);
+  if (!user) return unauthorized();
 
   try {
     await initConversationTables();
     const { id } = await context.params;
 
-    // 先确认存在再删，给前端明确的 404 语义（而非"删除 0 行"的静默成功）
-    const existing = await query(`SELECT id FROM conversations WHERE id = $1`, [id]);
+    // 先确认存在且属于当前用户再删，给前端明确的 404 语义（而非"删除 0 行"的静默成功）
+    const existing = await query(
+      `SELECT id FROM conversations WHERE id = $1 AND user_id = $2`,
+      [id, user.id],
+    );
     if (existing.rows.length === 0) {
-      return NextResponse.json({ error: '对话不存在' }, { status: 404 });
+      return NextResponse.json({ success: false, error: '对话不存在' }, { status: 404 });
     }
 
-    await query(`DELETE FROM conversations WHERE id = $1`, [id]);
+    await query(`DELETE FROM conversations WHERE id = $1 AND user_id = $2`, [id, user.id]);
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('[API] DELETE /api/conversations/[id] 失败:', error);
-    return NextResponse.json({ error: '删除对话失败' }, { status: 500 });
+    return NextResponse.json({ success: false, error: '删除对话失败' }, { status: 500 });
   }
 }

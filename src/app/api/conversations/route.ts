@@ -24,28 +24,34 @@ import type { Conversation, MessageUsage, TokenUsage } from '@/lib/types';
  */
 export async function GET(request: NextRequest) {
   // 鉴权：未登录或登录过期返回 401，防止未授权读取对话数据
-  if (!verifyAuth(request)) return unauthorized();
+  const user = verifyAuth(request);
+  if (!user) return unauthorized();
+
+
 
   try {
     // 幂等建表：首次部署时无需手动执行迁移脚本，表不存在会自动创建
     await initConversationTables();
 
-    // 查询 1：所有对话，按更新时间倒序（最近活跃的排最前，侧边栏直接可用）
+    // 查询 1：当前用户的所有对话，按更新时间倒序（最近活跃的排最前，侧边栏直接可用）
+    // 【数据隔离】一律按 JWT 中的 user_id 过滤，用户之间互不可见
     const convResult = await query(`
       SELECT id, title, created_at, updated_at, token_usage, message_usages
       FROM conversations
+      WHERE user_id = $1
       ORDER BY updated_at DESC
-    `);
+    `, [user.id]);
 
-    // 查询 2：所有消息，按创建时间正序（保证对话内消息顺序正确）
+    // 查询 2：该用户的所有消息，按创建时间正序（保证对话内消息顺序正确）
     // 【为什么分两次查询而不用 JOIN】
     // JOIN 会把对话元数据在每条消息行上重复，数据冗余且需要去重；
     // 分两次查询 + 内存分组更直观，对话量小时性能差异可忽略
     const msgResult = await query(`
-      SELECT id, conversation_id, role, content, created_at
-      FROM messages
-      ORDER BY created_at ASC
-    `);
+      SELECT m.id, m.conversation_id, m.role, m.content, m.created_at
+      FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id AND c.user_id = $1
+      ORDER BY m.created_at ASC
+    `, [user.id]);
 
     // 内存中按 conversation_id 分组消息，并把数据库行映射为前端的 UIMessage 结构
     const messagesByConv = new Map<string, UIMessage[]>();
@@ -85,7 +91,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     // 服务端日志保留完整错误便于排查，对前端只返回通用错误信息（不泄露内部细节）
     console.error('[API] GET /api/conversations 失败:', error);
-    return NextResponse.json({ error: '获取对话列表失败' }, { status: 500 });
+    return NextResponse.json({ success: false, error: '获取对话列表失败' }, { status: 500 });
   }
 }
 
@@ -99,7 +105,9 @@ export async function GET(request: NextRequest) {
  * 后续的更新/删除操作可以直接用这个 id，无需等待服务端响应。
  */
 export async function POST(request: NextRequest) {
-  if (!verifyAuth(request)) return unauthorized();
+  const user = verifyAuth(request);
+  if (!user) return unauthorized();
+  console.log('user', user)
 
   try {
     await initConversationTables();
@@ -108,17 +116,18 @@ export async function POST(request: NextRequest) {
 
     // 参数校验：id 是主键，缺失时直接 400，避免数据库报错信息泄露给前端
     if (!id) {
-      return NextResponse.json({ error: '缺少对话 id' }, { status: 400 });
+      return NextResponse.json({ success: false, error: '缺少对话 id' }, { status: 400 });
     }
 
+    // 对话归属当前登录用户（user_id 用于数据隔离）
     await query(
-      `INSERT INTO conversations (id, title) VALUES ($1, $2)`,
-      [id, title ?? '新对话'],
+      `INSERT INTO conversations (id, user_id, title) VALUES ($1, $2, $3)`,
+      [id, user.id, title ?? '新对话'],
     );
 
     return NextResponse.json({ success: true, id });
   } catch (error) {
     console.error('[API] POST /api/conversations 失败:', error);
-    return NextResponse.json({ error: '创建对话失败' }, { status: 500 });
+    return NextResponse.json({ success: false, error: '创建对话失败' }, { status: 500 });
   }
 }

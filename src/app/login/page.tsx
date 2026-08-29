@@ -19,7 +19,7 @@ export default function LoginPage() {
             });
             const data = await res.json();
             if (!data.success) {
-                throw new Error(data.message || '登录失败，请稍后重试');
+                throw new Error(data.error || '登录失败，请稍后重试');
             }
             message.success('登录成功，正在跳转…');
             setTimeout(() => {

@@ -5,13 +5,20 @@ import { Form, Input, Button, Upload, App } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined, CameraOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 
+/** 注册表单值结构（与 antd Form 字段对应） */
+interface RegisterFormValues {
+    username: string;
+    password: string;
+    email: string;
+}
+
 export default function RegisterPage() {
     const { message } = App.useApp();
     const [loading, setLoading] = useState(false);
     const [fileList, setFileList] = useState<UploadFile[]>([]);
     const [form] = Form.useForm();
 
-    const onFinish = async (values: any) => {
+    const onFinish = async (values: RegisterFormValues) => {
         setLoading(true);
         try {
             const res = await fetch('/api/auth/register', {
@@ -31,7 +38,7 @@ export default function RegisterPage() {
                     window.location.href = '/login';
                 }, 800);
             } else {
-                message.error(data.message || '注册失败，请稍后重试');
+                message.error(data.error || '注册失败，请稍后重试');
             }
 
         } catch (error) {
