@@ -3,10 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "worker:documents": "tsx --env-file=.env.local scripts/document-worker.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit --incremental false"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.52",
@@ -17,9 +20,14 @@
     "ai": "^6.0.208",
     "antd": "^5.29.0",
     "bcryptjs": "^3.0.3",
+    "bullmq": "^6.3.4",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^1.28.0",
+    "mammoth": "^1.12.2",
+    "minio": "^8.0.7",
     "next": "^16.0.3",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.23.0",
     "react": "^18.2.0",
     "react-compiler-runtime": "^1.0.0",
@@ -28,7 +36,8 @@
     "react-syntax-highlighter": "^16.1.1",
     "remark-gfm": "^4.0.1",
     "sass": "^1.94.1",
-    "uuid": "^14.0.1"
+    "uuid": "^14.0.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -45,6 +54,7 @@
     "ignore-loader": "^0.1.2",
     "null-loader": "^4.0.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }

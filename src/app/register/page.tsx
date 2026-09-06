@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useState } from 'react';
 import { Form, Input, Button, Upload, App } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined, CameraOutlined } from '@ant-design/icons';
@@ -41,7 +42,7 @@ export default function RegisterPage() {
                 message.error(data.error || '注册失败，请稍后重试');
             }
 
-        } catch (error) {
+        } catch {
             message.error('注册请求失败');
         } finally {
             setLoading(false);
@@ -127,7 +128,7 @@ export default function RegisterPage() {
                             showUploadList={false}
                         >
                             {fileList.length > 0 && fileList[0].url ? (
-                                <img
+                                <Image width={100} height={100} unoptimized
                                     src={fileList[0].url}
                                     alt="avatar"
                                     style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }}

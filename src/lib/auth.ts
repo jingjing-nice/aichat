@@ -29,6 +29,7 @@ export function verifyAuth(request: NextRequest): AuthUser | null {
   if (!token) return null;
   try {
     const payload = jwt.verify(token, jwtSecretKey) as jwt.JwtPayload & AuthUser;
+    if (!Number.isSafeInteger(payload.id) || payload.id <= 0 || typeof payload.username !== 'string') return null;
     return { id: payload.id, username: payload.username };
   } catch {
     return null;

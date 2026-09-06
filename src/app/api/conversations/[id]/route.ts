@@ -3,7 +3,7 @@
  * 提供单个对话的查询（GET）、更新（PUT）、删除（DELETE）
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { query, initConversationTables } from '@/lib/db';
+import { query, initConversationTables, getPool } from '@/lib/db';
 import { verifyAuth, unauthorized } from '@/lib/auth';
 import type { UIMessage } from 'ai';
 import type { MessageUsage, TokenUsage } from '@/lib/types';
@@ -48,7 +48,8 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const messages: UIMessage[] = msgResult.rows.map((msg: { id: string; role: string; content: unknown }) => ({
       id: msg.id,
       role: msg.role as UIMessage['role'],
-      parts: msg.content as UIMessage['parts'],
+      parts: (Array.isArray(msg.content) ? msg.content : (msg.content as UIMessage).parts) as UIMessage['parts'],
+      metadata: Array.isArray(msg.content) ? undefined : (msg.content as UIMessage).metadata,
     }));
 
     return NextResponse.json({
@@ -81,7 +82,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
  */
 export async function PUT(request: NextRequest, context: RouteContext) {
   const user = verifyAuth(request);
-  console.log('user----', user)
   if (!user) return unauthorized();
 
   try {
@@ -100,60 +100,70 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       messageUsages?: MessageUsage[];
     };
 
-    // 先检查对话是否存在且属于当前用户，对不存在/他人的 id 返回 404 而不是静默成功
-    const existing = await query(
-      `SELECT id FROM conversations WHERE id = $1 AND user_id = $2`,
-      [id, user.id],
-    );
-    if (existing.rows.length === 0) {
-      return NextResponse.json({ success: false, error: '对话不存在' }, { status: 404 });
-    }
-
-    // 更新对话元数据：COALESCE(新值, 旧值) 实现"传了才更新，没传保留"
-    if (title !== undefined || tokenUsage !== undefined || messageUsages !== undefined) {
-      await query(
-        `UPDATE conversations SET
-          title = COALESCE($1, title),
-          token_usage = COALESCE($2::jsonb, token_usage),
-          message_usages = COALESCE($3::jsonb, message_usages),
-          updated_at = NOW()
-        WHERE id = $4 AND user_id = $5`,
-        [
-          title ?? null,
-          // JSONB 字段需要序列化为字符串后显式转型 ::jsonb
-          tokenUsage ? JSON.stringify(tokenUsage) : null,
-          messageUsages ? JSON.stringify(messageUsages) : null,
-          id,
-          user.id,
-        ],
-      );
-    }
-
-    // 更新消息：全量替换策略 = 先清空旧消息，再重新插入
-    if (messages !== undefined) {
-      await query(`DELETE FROM messages WHERE conversation_id = $1`, [id]);
-
-      if (messages.length > 0) {
-        // 逐条插入：单对话消息量小，逐条写简单可靠；
-        // 若未来消息量大可优化为多行 VALUES 批量插入
-        for (let i = 0; i < messages.length; i++) {
-          const msg = messages[i];
-          await query(
-            `INSERT INTO messages (id, conversation_id, role, content)
-             VALUES ($1, $2, $3, $4::jsonb)`,
-            // 兼容无 id 的消息：用"对话id+序号"生成兑底 id，保证主键非空
-            [msg.id || `msg-${id}-${i}`, id, msg.role, JSON.stringify(msg.parts)],
-          );
-        }
-      }
-
-      // 有新消息说明对话活跃，刷新 updated_at（侧边栏按此字段排序和分组）
-      await query(
-        `UPDATE conversations SET updated_at = NOW() WHERE id = $1 AND user_id = $2`,
+    if (messages !== undefined && (!Array.isArray(messages) || messages.some(msg =>
+      !msg || !['user', 'assistant', 'system'].includes(msg.role) || !Array.isArray(msg.parts)
+    ))) return NextResponse.json({ success: false, error: '消息格式无效' }, { status: 400 });
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      // 先检查对话是否存在且属于当前用户，对不存在/他人的 id 返回 404 而不是静默成功
+      const existing = await client.query(
+        `SELECT id FROM conversations WHERE id = $1 AND user_id = $2 FOR UPDATE`,
         [id, user.id],
       );
-    }
+      if (existing.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return NextResponse.json({ success: false, error: '对话不存在' }, { status: 404 });
+      }
 
+      // 更新对话元数据：COALESCE(新值, 旧值) 实现"传了才更新，没传保留"
+      if (title !== undefined || tokenUsage !== undefined || messageUsages !== undefined) {
+        await client.query(
+          `UPDATE conversations SET
+            title = COALESCE($1, title),
+            token_usage = COALESCE($2::jsonb, token_usage),
+            message_usages = COALESCE($3::jsonb, message_usages),
+            updated_at = NOW()
+          WHERE id = $4 AND user_id = $5`,
+          [
+            title ?? null,
+            // JSONB 字段需要序列化为字符串后显式转型 ::jsonb
+            tokenUsage ? JSON.stringify(tokenUsage) : null,
+            messageUsages ? JSON.stringify(messageUsages) : null,
+            id,
+            user.id,
+          ],
+        );
+      }
+
+      // 更新消息：全量替换策略 = 先清空旧消息，再重新插入
+      if (messages !== undefined) {
+        await client.query(`DELETE FROM messages WHERE conversation_id = $1`, [id]);
+
+        if (messages.length > 0) {
+          await client.query(
+            `INSERT INTO messages (id, conversation_id, role, content, created_at)
+             SELECT item->>'id', $1, item->>'role', item - 'id' - 'role',
+                    NOW() + (ordinality * INTERVAL '1 microsecond')
+             FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS entries(item, ordinality)`,
+            [id, JSON.stringify(messages.map((msg, i) => ({ ...msg, id: msg.id || `msg-${id}-${i}` })))],
+          );
+        }
+
+        // 有新消息说明对话活跃，刷新 updated_at（侧边栏按此字段排序和分组）
+        await client.query(
+          `UPDATE conversations SET updated_at = NOW() WHERE id = $1 AND user_id = $2`,
+          [id, user.id],
+        );
+      }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('[API] PUT /api/conversations/[id] 失败:', error);

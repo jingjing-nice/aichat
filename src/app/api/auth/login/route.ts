@@ -19,6 +19,18 @@ function fail(error: string, status: number) {
 const TOKEN_EXPIRES_IN = '7d';
 const TOKEN_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 
+/**
+ * Secure Cookie 只能通过 HTTPS 回传。生产环境也可能通过 HTTP 在本机、局域网
+ * 或反向代理后运行，因此应按浏览器实际使用的协议判断，而不能只看 NODE_ENV。
+ */
+export function isSecureRequest(req: NextRequest): boolean {
+    const forwardedProto = req.headers.get('x-forwarded-proto')
+        ?.split(',')[0]
+        ?.trim()
+        .toLowerCase();
+    return forwardedProto ? forwardedProto === 'https' : req.nextUrl.protocol === 'https:';
+}
+
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
@@ -55,6 +67,7 @@ export async function POST(req: NextRequest) {
             value: tokenStr,
             path: '/',
             maxAge: TOKEN_MAX_AGE_SECONDS, // 有效期与 JWT 有效期保持一致
+            secure: isSecureRequest(req),
             httpOnly: true,          // 防止 XSS 攻击，JavaScript 无法读取
             sameSite: 'lax',         // 防止 CSRF 攻击
         });

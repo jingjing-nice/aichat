@@ -117,8 +117,8 @@ export async function initConversationTables() {
  * 初始化 RAG 文档向量表（如不存在则创建）
  *
  * 【pgvector 依赖】
- * Neon 原生支持 pgvector 扩展，CREATE EXTENSION IF NOT EXISTS 幂等，
- * 表已存在时几乎零成本，沿用对话表的懒初始化模式。
+ * Neon 原生支持 pgvector 扩展。初始化结果在当前 Node.js 进程中缓存，
+ * 避免文档列表轮询时重复执行 DDL 和索引检查。
  *
  * 【表结构设计说明】
  * rag_documents 表：文档元数据（一个文档一行），用于列表展示和按文档删除
@@ -129,10 +129,27 @@ export async function initConversationTables() {
  *   - HNSW 索引 + 余弦相似度：近似最近邻检索，比精确扫描快几个数量级，
  *     小规模数据下召回率几乎无损
  */
-export async function initDocumentTables() {
+// 进程内共享同一个初始化 Promise：并发首请求只会执行一次 DDL，避免索引创建竞争。
+let documentTablesInitialization: Promise<void> | null = null;
 
+export function initDocumentTables(): Promise<void> {
+  // 已在初始化或初始化完成时直接复用 Promise，调用方始终 await 同一结果。
+  if (!documentTablesInitialization) {
+    documentTablesInitialization = initializeDocumentTables().catch((error: unknown) => {
+      // 初始化失败不能缓存失败结果，修复配置/数据库后允许后续请求重试。
+      documentTablesInitialization = null;
+      throw error;
+    });
+  }
+  return documentTablesInitialization;
+}
+
+async function initializeDocumentTables(): Promise<void> {
+  await initUserTable();
+  // pgvector 提供 VECTOR 类型、<=> 余弦距离操作符和 HNSW 索引能力。
   await query(`CREATE EXTENSION IF NOT EXISTS vector`);
 
+  // 一份原始文档一行：供前端列表、权限控制、重试和删除使用。
   await query(`
     CREATE TABLE IF NOT EXISTS rag_documents (
       id TEXT PRIMARY KEY,
@@ -141,11 +158,20 @@ export async function initDocumentTables() {
       source_type TEXT NOT NULL DEFAULT 'text',
       source_info TEXT,
       chunk_count INTEGER NOT NULL DEFAULT 0,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      object_key TEXT,
+      original_name TEXT,
+      mime_type TEXT,
+      file_size BIGINT,
+      file_hash TEXT,
+      ingestion_status TEXT NOT NULL DEFAULT 'uploaded',
+      ingestion_error TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 
 
+  // 一个文本分块一行：content 用于给 LLM 提供证据，embedding 用于语义相似度检索。
   await query(`
     CREATE TABLE IF NOT EXISTS documents (
       id TEXT PRIMARY KEY,
@@ -156,15 +182,46 @@ export async function initDocumentTables() {
     )
   `);
 
-  // 老表补列：chunks 关联文档 ID，支持按文档删除/统计
+  // 老表补列：每条 ALTER 都是幂等迁移，部署到已有数据库也不会丢失历史数据。
+  // doc_id 将向量块关联到元数据，支持按文档删除、用户隔离和统计。
   await query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_id TEXT`);
+  // NOT VALID 保留旧数据；新写入受外键保护，删除元数据会级联清理分块。
+  await query(`DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'documents_doc_id_fkey'
+                   AND conrelid = 'documents'::regclass) THEN
+      ALTER TABLE documents ADD CONSTRAINT documents_doc_id_fkey
+        FOREIGN KEY (doc_id) REFERENCES rag_documents(id) ON DELETE CASCADE NOT VALID;
+    END IF;
+  END $$`);
+
+  await query(`ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS object_key TEXT`);
+  await query(`ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS original_name TEXT`);
+  await query(`ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS mime_type TEXT`);
+  await query(`ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS file_size BIGINT`);
+  await query(`ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS file_hash TEXT`);
+  await query(`ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS ingestion_status TEXT NOT NULL DEFAULT 'uploaded'`);
+  await query(`ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS ingestion_error TEXT`);
+  await query(`ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  // 迁移前已完成向量化的文档没有对象存储定位信息，视为已就绪，避免 UI 无限轮询。
+  // HNSW 是近似最近邻索引；vector_cosine_ops 与 rag.ts 的 <=> 余弦距离查询匹配。
+  await query(`
+    UPDATE rag_documents SET ingestion_status = 'ready'
+    WHERE chunk_count > 0 AND object_key IS NULL AND ingestion_status = 'uploaded'
+  `);
 
   await query(`
     CREATE INDEX IF NOT EXISTS idx_documents_embedding
     ON documents USING hnsw (embedding vector_cosine_ops)
   `);
 
+  // 加速按 docId 删除所有分块；这是删除文档与 Worker 清理孤儿向量的高频条件。
   await query(`CREATE INDEX IF NOT EXISTS idx_documents_doc_id ON documents(doc_id)`);
+  // 同一用户的相同文件只保留一份，避免重复产生 Embedding 成本。
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_rag_documents_user_file_hash
+    ON rag_documents (user_id, file_hash)
+    WHERE file_hash IS NOT NULL
+  `);
 
   console.log('[db] 文档向量表初始化完成');
 }
@@ -198,7 +255,7 @@ export async function initUserTable() {
  *
  * 【为什么需要它】
  * pg 的连接池会保持 Node.js 进程存活（有打开的 socket），
- * 脚本（如 init-conversation-db.ts）执行完后若不关闭连接池，进程不会退出。
+ * 后台 Worker 退出时需要关闭连接池，释放数据库连接。
  * API Route 中不需要调用，进程由 Vercel/Next.js 托管。
  */
 export async function closePool() {

@@ -90,12 +90,7 @@ export function ChatView({
 
       // 更新 useChat 的本地消息并重新发送
       const truncated = messages.slice(0, idx);
-      const edited: UIMessage = {
-        ...messages[idx],
-        parts: [{ type: 'text', text: newContent }],
-      };
-      // setMessages 同步更新内部状态，sendMessage 会立即使用新消息
-      setMessages([...truncated, edited]);
+      setMessages(truncated);
       sendMessage({ text: newContent });
     },
     [messages, conversationId, onEditMessage, setMessages, sendMessage],

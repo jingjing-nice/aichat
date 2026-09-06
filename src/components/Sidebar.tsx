@@ -1,8 +1,10 @@
 'use client';
 
 import { Plus, MessageSquare, Trash2, PanelLeftClose, PanelLeft } from 'lucide-react';
-import { useState, useCallback, useEffect } from 'react'; // 1. 引入 useEffect
+import { useState, useCallback, useSyncExternalStore } from 'react'; // 1. 引入 useSyncExternalStore
 import type { Conversation } from '@/lib/types';
+
+const subscribe = () => () => {};
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -50,13 +52,7 @@ export function Sidebar({
 }: SidebarProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
-  // 2. 增加客户端挂载状态
-  const [isMounted, setIsMounted] = useState(false);
-
-  useEffect(() => {
-    // 3. 组件在客户端挂载后，标记为 true
-    setIsMounted(true);
-  }, []);
+  const isMounted = useSyncExternalStore(subscribe, () => true, () => false);
 
   const handleDelete = useCallback(
     (e: React.MouseEvent, id: string) => {

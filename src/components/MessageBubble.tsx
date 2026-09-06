@@ -1,23 +1,21 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { isValidElement, type ReactNode, type ReactElement, useState, useCallback, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { UIMessage } from 'ai';
 import { Copy, Check, RefreshCw, Pencil, Check as CheckIcon } from 'lucide-react';
 import { CodeBlock } from './CodeBlock';
 import { ReasoningBlock } from './ReasoningBlock';
+import { RagSources } from './RagSources';
 import { ToolCallBlock } from './ToolCallBlock';
 
 /** 递归提取 React 节点中的纯文本 */
-const extractText = (node: any): string => {
-  if (typeof node === 'string') return node;
-  if (node?.props?.children) {
-    return Array.isArray(node.props.children)
-      ? node.props.children.map(extractText).join('')
-      : extractText(node.props.children);
-  }
-  return '';
+type CodeProps = { children?: ReactNode; className?: string };
+const extractText = (node: ReactNode): string => {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  return isValidElement<CodeProps>(node) ? extractText(node.props.children) : '';
 };
 
 interface MessageBubbleProps {
@@ -203,6 +201,8 @@ export function MessageBubble({
           );
         })}
 
+        <RagSources metadata={message.metadata} />
+
         {/* 操作栏 */}
         {!isStreaming && (
           <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
@@ -238,7 +238,7 @@ function extractTextFromParts(parts: UIMessage['parts']): string {
 }
 
 /** 递归查找 code 子元素 */
-function findCodeChild(children: any): any {
+function findCodeChild(children: ReactNode): ReactElement<CodeProps> | null {
   if (!children) return null;
   if (Array.isArray(children)) {
     for (const child of children) {
@@ -247,7 +247,8 @@ function findCodeChild(children: any): any {
     }
     return null;
   }
-  if (children?.type === 'code' || children?.props?.className?.includes('language-')) {
+  if (!isValidElement<CodeProps>(children)) return null;
+  if (children.type === 'code' || children?.props?.className?.includes('language-')) {
     return children;
   }
   if (children?.props?.children) {

@@ -1,10 +1,12 @@
 'use client';
 
+// React 状态、生命周期、缓存回调和隐藏 file input 的引用。
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Upload, FileText, Trash2, X, Database, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
+// 知识库管理界面的图标；只影响视觉提示，不承载 RAG 业务逻辑。
+import { Upload, FileText, Trash2, X, Database, AlertCircle, Loader2, RefreshCw } from 'lucide-react';
 
 /**
- * 文档管理面板组件
+ * RAG 文档管理面板组件。
  * 
  * 功能:
  * 1. 查看已上传的文档列表
@@ -15,27 +17,42 @@ import { Upload, FileText, Trash2, X, Database, AlertCircle, CheckCircle, Loader
  * - 使用 Modal 形式展示，不占用主聊天区域空间
  * - 上传后立即开始摄入，显示进度状态
  * - 摄入完成后自动刷新文档列表
+ *
+ * 为什么前端只轮询状态而不等待上传接口完成：接口返回 202 只代表任务已接受；
+ * PDF 解析和 Embedding 属于后台工作，可能耗时数秒至数分钟。
  */
 
 interface Document {
+  /** rag_documents.id，同时也是 BullMQ jobId 和 documents.doc_id 的关联键。 */
   id: string;
+  /** 前端显示的文档标题，不一定等于用户上传时的原始文件名。 */
   title: string;
   source_type: string;
   source_info: string | null;
   chunk_count: number;
+  /** Worker 处理进度；只有 ready 状态的文档才会参与聊天检索。 */
+  ingestion_status: 'uploaded' | 'queued' | 'parsing' | 'indexing' | 'ready' | 'failed';
+  /** 最终失败时由 Worker 写入的可展示错误原因。 */
+  ingestion_error: string | null;
   created_at: string;
 }
 
 interface DocumentManagerProps {
+  /** 父组件控制弹窗显示；关闭时停止轮询，避免后台空请求。 */
   isOpen: boolean;
+  /** 点击关闭按钮时回调给父组件，由父组件更新显示状态。 */
   onClose: () => void;
 }
 
-type UploadStatus = 'idle' | 'uploading' | 'success' | 'error';
+// 上传阶段是前端即时反馈；与数据库 ingestion_status（Worker 后台阶段）分开维护。
+type UploadStatus = 'idle' | 'uploading' | 'queued' | 'error';
 
 export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
+  // 后端返回的元数据列表，是渲染状态、重试按钮和删除按钮的唯一数据来源。
   const [documents, setDocuments] = useState<Document[]>([]);
+  // GET 请求期间展示列表加载状态，防止用户误以为没有文档。
   const [loading, setLoading] = useState(false);
+  // 当前上传动作的短期状态；不替代每份文档的 ingestion_status。
   const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
   const [uploadError, setUploadError] = useState('');
   const [uploadMode, setUploadMode] = useState<'text' | 'file'>('text');
@@ -46,6 +63,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
 
   // 加载文档列表
   const fetchDocuments = useCallback(async () => {
+    // 请求前置 loading，finally 中无论成功失败都复位，避免 UI 永久转圈。
     setLoading(true);
     try {
       const res = await fetch('/api/documents');
@@ -61,10 +79,21 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
   }, []);
 
   useEffect(() => {
-    if (isOpen) {
-      fetchDocuments();
-    }
+    // 弹窗关闭时不请求；setTimeout(0) 将状态更新安排到 effect 后，符合 React effect 规则。
+    if (!isOpen) return;
+    const timer = window.setTimeout(() => { void fetchDocuments(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [isOpen, fetchDocuments]);
+
+  // 仅在有运行中任务时轮询，完成或失败后自动停止，避免空闲请求。
+  useEffect(() => {
+  // uploaded 是兼容历史数据的静态状态；新任务创建后直接进入 queued。
+  // 不能把它视作处理中，否则历史记录会导致永久轮询。
+  const hasPending = documents.some(doc => ['queued', 'parsing', 'indexing'].includes(doc.ingestion_status));
+    if (!isOpen || !hasPending) return;
+    const timer = window.setInterval(fetchDocuments, 2000);
+    return () => window.clearInterval(timer);
+  }, [documents, fetchDocuments, isOpen]);
 
   // 重置表单
   const resetForm = () => {
@@ -77,6 +106,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
 
   // 上传文档
   const handleUpload = async () => {
+    // 先在浏览器校验必填项，减少无效文件上传；服务端仍会重复校验作为安全边界。
     if (!title.trim()) {
       setUploadError('请输入文档标题');
       return;
@@ -96,6 +126,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
     setUploadError('');
 
     try {
+      // 与 documents/route.ts 的 POST 协议对应：文本走 content，文件走 file。
       const formData = new FormData();
       formData.append('title', title.trim());
 
@@ -116,8 +147,9 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
         throw new Error(data.error || '上传失败');
       }
 
-      setUploadStatus('success');
+      // 202 只表示已进入队列，清空表单后立即刷新，以展示 queued/parsing 等后台状态。
       resetForm();
+      setUploadStatus('queued');
       fetchDocuments(); // 刷新列表
 
       // 2秒后重置状态
@@ -128,8 +160,21 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
     }
   };
 
+  const handleRetry = async (docId: string) => {
+    // PATCH 只重新入队，不重新上传；原始文件仍保存在 MinIO。
+    try {
+      const res = await fetch(`/api/documents?id=${docId}`, { method: 'PATCH' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '重新处理失败');
+      await fetchDocuments();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '重新处理失败');
+    }
+  };
+
   // 删除文档
   const handleDelete = async (docId: string) => {
+    // 删除会清除向量和原文件，先确认以避免不可逆的误操作。
     if (!confirm('确定要删除这个文档吗？相关的向量数据也会被清除。')) {
       return;
     }
@@ -152,12 +197,13 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
 
   // 处理文件选择
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // file input 可选值只取第一个：当前 RAG 上传接口一次只创建一份文档任务。
     const file = e.target.files?.[0];
     if (file) {
       setSelectedFile(file);
       // 自动用文件名填充标题（如果标题为空）
       if (!title) {
-        setTitle(file.name.replace(/\.(txt|md|csv)$/, ''));
+        setTitle(file.name.replace(/\.(txt|md|markdown|csv|json|pdf|docx|xlsx|xls)$/i, ''));
       }
     }
   };
@@ -244,13 +290,13 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
                       {selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)
                     </span>
                   ) : (
-                    '点击选择 .txt 或 .md 文件'
+                    '支持 TXT、Markdown、CSV、JSON、PDF、Word、Excel（最大 10 MB）'
                   )}
                 </div>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".txt,.md,.csv"
+                  accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.xlsx,.xls"
                   onChange={handleFileChange}
                   className="hidden"
                 />
@@ -258,10 +304,10 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
             )}
 
             {/* 状态提示 */}
-            {uploadStatus === 'success' && (
-              <div className="flex items-center gap-2 text-green-600 text-sm">
-                <CheckCircle size={16} />
-                文档已成功摄入知识库
+            {uploadStatus === 'queued' && (
+              <div className="flex items-center gap-2 text-blue-600 text-sm">
+                <Loader2 size={16} className="animate-spin" />
+                文档已上传，正在等待异步处理
               </div>
             )}
             {uploadStatus === 'error' && uploadError && (
@@ -280,12 +326,12 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
               {uploadStatus === 'uploading' ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  正在摄入...
+                  正在上传...
                 </>
               ) : (
                 <>
                   <Upload size={16} />
-                  上传并摄入
+                  上传并加入队列
                 </>
               )}
             </button>
@@ -295,7 +341,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
           <div className="space-y-3">
             <h3 className="text-sm font-medium text-gray-700 flex items-center gap-2">
               <FileText size={16} />
-              已摄入文档 ({documents.length})
+              文档任务 ({documents.length})
             </h3>
 
             {loading ? (
@@ -305,7 +351,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
               </div>
             ) : documents.length === 0 ? (
               <div className="text-center py-8 text-gray-400 text-sm">
-                还没有文档，上传第一个文档开始使用 RAG
+                还没有文档，上传第一个文档开始构建知识库
               </div>
             ) : (
               <div className="space-y-2">
@@ -321,17 +367,33 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
                           {doc.title}
                         </div>
                         <div className="text-xs text-gray-500">
-                          {doc.chunk_count} 个分块 · {doc.source_info || doc.source_type}
+                          <StatusBadge status={doc.ingestion_status} /> · {doc.chunk_count} 个分块 · {doc.source_info || doc.source_type}
                         </div>
+                        {doc.ingestion_status === 'failed' && doc.ingestion_error && (
+                          <div className="mt-1 text-xs text-red-500 truncate" title={doc.ingestion_error}>
+                            {doc.ingestion_error}
+                          </div>
+                        )}
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleDelete(doc.id)}
-                      className="p-2 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors shrink-0"
-                      title="删除文档"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    <div className="flex shrink-0">
+                      {doc.ingestion_status === 'failed' && (
+                        <button
+                          onClick={() => handleRetry(doc.id)}
+                          className="p-2 rounded-lg hover:bg-blue-50 text-gray-400 hover:text-blue-500 transition-colors"
+                          title="重新处理"
+                        >
+                          <RefreshCw size={14} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleDelete(doc.id)}
+                        className="p-2 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
+                        title="删除文档"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -341,4 +403,25 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
       </div>
     </div>
   );
+}
+
+function StatusBadge({ status }: { status: Document['ingestion_status'] }) {
+  // 数据库存英文状态适合程序判断；在这里集中映射为中文和颜色，避免 JSX 中散落条件判断。
+  const labels: Record<Document['ingestion_status'], string> = {
+    uploaded: '已上传',
+    queued: '排队中',
+    parsing: '正在解析',
+    indexing: '正在索引',
+    ready: '已就绪',
+    failed: '处理失败',
+  };
+  const colors: Record<Document['ingestion_status'], string> = {
+    uploaded: 'text-gray-500',
+    queued: 'text-blue-600',
+    parsing: 'text-amber-600',
+    indexing: 'text-violet-600',
+    ready: 'text-green-600',
+    failed: 'text-red-600',
+  };
+  return <span className={colors[status]}>{labels[status]}</span>;
 }

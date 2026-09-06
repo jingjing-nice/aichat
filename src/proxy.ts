@@ -31,7 +31,7 @@ export function proxy(request: NextRequest) {
         jwt.verify(token.value, jwtSecretKey)
         // token有效放行
         return NextResponse.next()
-    } catch (error) {
+    } catch {
         //  token 无效或已过期，清除 cookie 并重定向到登录页
         const response = NextResponse.redirect(new URL('/login', request.url));
         response.cookies.delete('token');

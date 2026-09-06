@@ -17,11 +17,11 @@ interface ToolCallBlockProps {
   /** 工具名称 */
   toolName: string;
   /** 工具调用的输入参数 */
-  input?: any;
+  input?: unknown;
   /** 工具调用的状态 */
   state: 'input-streaming' | 'input-available' | 'output-available' | 'output-error' | 'call' | 'result' | string;
   /** 工具调用的输出结果 */
-  output?: any;
+  output?: unknown;
   /** 错误信息 */
   errorText?: string;
   /** 是否正在流式传输 */
@@ -47,24 +47,24 @@ function getToolIcon(toolName: string, size = 14) {
 }
 
 /** 格式化输出，对长字符串进行截断显示 */
-function formatOutput(output: any): string {
+function formatOutput(output: unknown): string {
   if (output == null) return '';
   if (typeof output === 'string') return output;
   try {
-    return JSON.stringify(output, null, 2);
+    return JSON.stringify(output, null, 2) ?? String(output);
   } catch {
     return String(output);
   }
 }
 
 /** 格式化输入参数，只显示关键信息 */
-function formatInput(input: any): string {
+function formatInput(input: unknown): string {
   if (input == null) return '';
   if (typeof input === 'string') return input;
   // 文件相关工具：优先显示 path
-  if (input.path) return input.path;
+  if (typeof input === 'object' && 'path' in input && typeof input.path === 'string') return input.path;
   try {
-    const str = JSON.stringify(input);
+    const str = JSON.stringify(input) ?? String(input);
     return str.length > 120 ? str.slice(0, 120) + '…' : str;
   } catch {
     return String(input);

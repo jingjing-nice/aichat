@@ -100,7 +100,14 @@ export async function deleteConversationInDB(id: string): Promise<void> {
  * 2. 复用现有的 PUT 接口，无需额外的批量接口
  * 3. 对话数量少（几十个以内），串行请求的总耗时可接受
  */
-export async function saveState(state: StorageSchema): Promise<void> {
+let pendingSave: Promise<void> = Promise.resolve();
+export function saveState(state: StorageSchema): Promise<void> {
+  // 按快照生成顺序发送，避免前一次慢请求在新快照之后覆盖数据库。
+  pendingSave = pendingSave.catch(() => {}).then(() => persistState(state));
+  return pendingSave;
+}
+
+async function persistState(state: StorageSchema): Promise<void> {
   for (const conv of state.conversations) {
     try {
       await updateConversationInDB(conv.id, {

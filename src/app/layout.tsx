@@ -1,4 +1,4 @@
-import "./globals.scss";
+import "./globals.css";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import { ConfigProvider, App } from "antd";
 import zhCN from "antd/locale/zh_CN";

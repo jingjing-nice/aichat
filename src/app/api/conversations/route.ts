@@ -64,7 +64,8 @@ export async function GET(request: NextRequest) {
       const uiMsg: UIMessage = {
         id: msg.id,
         role: msg.role as UIMessage['role'],
-        parts: msg.content,
+        parts: Array.isArray(msg.content) ? msg.content : msg.content.parts,
+        metadata: Array.isArray(msg.content) ? undefined : msg.content.metadata,
       };
       messagesByConv.get(convId)!.push(uiMsg);
     }
@@ -107,7 +108,6 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const user = verifyAuth(request);
   if (!user) return unauthorized();
-  console.log('user', user)
 
   try {
     await initConversationTables();
